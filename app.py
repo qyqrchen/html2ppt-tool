@@ -4,6 +4,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 import io
 import time
+import os
 from playwright.sync_api import sync_playwright
 
 os.system("playwright install chromium")
