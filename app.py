@@ -7,7 +7,12 @@ import time
 import os
 from playwright.sync_api import sync_playwright
 
-os.system("playwright install chromium")
+# 🔥 新增缓存安装逻辑，只在启动时执行一次，防止每次点击重复下载
+@st.cache_resource
+def install_playwright():
+    os.system("playwright install chromium")
+
+install_playwright()
 
 def html_to_pptx_with_charts(html_content):
     prs = Presentation()
