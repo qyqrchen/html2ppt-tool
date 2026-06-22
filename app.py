@@ -23,25 +23,17 @@ def html_to_pptx_with_charts(html_content):
         print("\n--- 🚀 通用转换引擎启动 ---")
         page.set_content(html_content, wait_until="networkidle", timeout=30000)
         
-        print("⏳ 正在等待前端渲染图表与动态表格数据...")
         try:
-            # 等待 Highcharts 图表出现
             page.wait_for_function("() => typeof Highcharts !== 'undefined' && Highcharts.charts.length > 0", timeout=8000)
-            
-            # 🔥 核心升级1：死死盯住 tbody，直到 JavaScript 把动态表格数据填进去
             page.wait_for_function("() => document.querySelectorAll('tbody tr').length > 0", timeout=10000)
-            
-            # 额外给浏览器 1 秒钟时间，让所有文字和排版彻底落定
             page.wait_for_timeout(1000)
-            print("✅ 动态数据已全部注入完毕！")
-        except Exception as e:
-            print(f"⚠️ 等待渲染超时或无动态数据，强制提取: {e}")
+        except Exception:
+            pass
 
-        # 提取经过 JS 彻底加工后的最终版 HTML
         rendered_html = page.content()
         soup = BeautifulSoup(rendered_html, 'html.parser')
 
-        # --- 1. 处理封面页 (兼容新旧版本) ---
+        # --- 1. 处理封面页 ---
         hero = soup.find('div', class_='hero') or soup.find('div', class_='header') or soup.find('div', class_='report-header')
         if hero:
             slide = prs.slides.add_slide(prs.slide_layouts[0])
@@ -54,13 +46,14 @@ def html_to_pptx_with_charts(html_content):
 
         # --- 2. 递归解析逻辑 ---
         def process_element(el, text_frame, slide_title_text):
-            if el.name in ['p', 'h4']:
+            # 🔥 修复 1：认识嵌套在盒子里的标题（h3）
+            if el.name in ['p', 'h3', 'h4']:
                 text = el.get_text(strip=True)
                 if text:
                     p = text_frame.add_paragraph()
                     p.text = text
-                    p.font.size = Pt(14)
-                    if el.name == 'h4':
+                    p.font.size = Pt(16 if el.name == 'h3' else 14)
+                    if el.name in ['h3', 'h4']:
                         p.font.bold = True
                         
             elif el.name in ['ul', 'ol']:
@@ -77,28 +70,36 @@ def html_to_pptx_with_charts(html_content):
                 if not rows: return
                 cols_count = max(len(row.find_all(['th', 'td'])) for row in rows)
                 
-                left, top, width, height = Inches(0.5), Inches(1.5), Inches(9), Inches(0.8)
+                # 🔥 修复 2：将表格展宽至 9.6 英寸，留出更大空间
+                left, top, width, height = Inches(0.2), Inches(1.5), Inches(9.6), Inches(0.5)
                 shape = table_slide.shapes.add_table(len(rows), cols_count, left, top, width, height)
                 table = shape.table
+                
+                # 🔥 修复 2.1：智能分配列宽！给内容最多的最后一列留足空间，防止把表格拉爆
+                if cols_count == 9:
+                    widths = [0.4, 0.8, 0.9, 1.4, 0.9, 0.9, 0.8, 1.0, 2.5]
+                    for idx, w in enumerate(widths):
+                        if idx < len(table.columns):
+                            table.columns[idx].width = Inches(w)
                 
                 for r_idx, row in enumerate(rows):
                     cells = row.find_all(['th', 'td'])
                     for c_idx, cell in enumerate(cells):
                         if c_idx < cols_count:
                             cell_tf = table.cell(r_idx, c_idx).text_frame
-                            # 🔥 修复粘连：用空格隔开提取的文字，防止标签贴在一起
                             cell_tf.text = cell.get_text(" ", strip=True)
                             for paragraph in cell_tf.paragraphs:
-                                paragraph.font.size = Pt(10) # 缩小字号防止表格塞不下
-                                
+                                # 缩小表格字号，确保能塞进一页 PPT 里
+                                paragraph.font.size = Pt(9)
+                                if r_idx == 0:
+                                    paragraph.font.bold = True
+                                    
             elif el.name == 'div':
                 classes = el.get('class', [])
                 
-                # 屏蔽网页控制台
                 if 'hero' in classes or 'header' in classes or 'controls' in classes or 'global-controls' in classes or 'report-header' in classes:
                     return
 
-                # 图表抓拍
                 if 'chart-container' in classes or 'chart-wrapper' in classes:
                     chart_id = el.get('id') if el.get('id') and str(el.get('id')).startswith('chart') else None
                     if not chart_id:
@@ -116,7 +117,6 @@ def html_to_pptx_with_charts(html_content):
                             chart_slide.shapes.add_picture(io.BytesIO(image_bytes), Inches(1), Inches(1.5), width=Inches(8))
                     return 
                     
-                # 🔥 核心升级2：兼容新版数据卡片
                 if 'metric-card' in classes or 'kpi-card' in classes:
                     p = text_frame.add_paragraph()
                     num = el.find(class_=lambda x: x and 'num' in x)
@@ -129,20 +129,20 @@ def html_to_pptx_with_charts(html_content):
                     p.font.size = Pt(16)
                     return
                 
-                # 🔥 核心升级3：兼容新版报告段落与列表说明
                 if 'section-desc' in classes or 'priority-item' in classes:
                     p = text_frame.add_paragraph()
                     p.text = ("📝 " if 'section' in classes else "🎯 ") + el.get_text(" ", strip=True)
                     p.font.size = Pt(14)
                     return
                         
-                # 🔥 核心升级4：兼容新版的分析框（analysis-box）
+                # 🔥 修复 3：解开分析框的封印！不再强行合并文字，只加个引导标题，让底下的 p 和 ul 正常换行解析
                 if 'insight-box' in classes or 'analysis-box' in classes:
                     p = text_frame.add_paragraph()
-                    # 保留原有的换行符，让分析文本层次分明
-                    p.text = "📌 深度分析：\n" + el.get_text("\n", strip=True) 
-                    p.font.size = Pt(13)
-                    return
+                    p.text = "📌 深度分析："
+                    p.font.bold = True
+                    p.font.size = Pt(16)
+                    # 注意：这里我们故意去掉了 return！
+                    # 这样代码就会像漏斗一样，继续往下走，把框里的段落和列表完美提取出来
                     
                 # 无差别向下钻透
                 for child in el.children:
@@ -159,7 +159,7 @@ def html_to_pptx_with_charts(html_content):
             h_tag = section.find(['h2', 'h1'])
             current_h_text = h_tag.get_text(strip=True) if h_tag else "页面内容提要"
             
-            # 屏蔽掉纯目录模块
+            # 过滤掉单纯当做目录的页面
             if "报告目录" in current_h_text:
                 continue
                 
