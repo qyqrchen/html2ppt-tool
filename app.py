@@ -7,7 +7,6 @@ import time
 import os
 from playwright.sync_api import sync_playwright
 
-# 🔥 新增缓存安装逻辑，只在启动时执行一次，防止每次点击重复下载
 @st.cache_resource
 def install_playwright():
     os.system("playwright install chromium")
@@ -16,27 +15,26 @@ install_playwright()
 
 def html_to_pptx_with_charts(html_content):
     prs = Presentation()
-    soup = BeautifulSoup(html_content, 'html.parser')
-
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(viewport={'width': 1440, 'height': 2000})
         
         print("\n--- 🚀 通用转换引擎启动 ---")
-        print("📥 正在将 HTML 注入浏览器内存...")
         page.set_content(html_content, wait_until="networkidle", timeout=30000)
         
-        print("⏳ 正在扫描前端动态脚本与图表...")
         try:
-            # 兼容性探针：检测是否有图表需要渲染
             page.wait_for_function("() => typeof Highcharts !== 'undefined' && Highcharts.charts.length > 0", timeout=8000)
             page.wait_for_timeout(2000)
-            print("✅ 动态图表已锁定，准备执行抓拍！")
         except Exception:
-            print("ℹ️ 未检测到复杂动态图表，直接进入通用结构解析流程...")
+            pass
 
-        # --- 1. 处理封面页 ---
-        hero = soup.find('div', class_='hero') or soup.find('div', class_='header')
+        # 🔥 核心升级1：不再解析原始代码，直接提取运行完 JS、填满表格后的终极 HTML 源码！
+        rendered_html = page.content()
+        soup = BeautifulSoup(rendered_html, 'html.parser')
+
+        # --- 1. 处理封面页 (兼容旧版 hero 和新版 report-header) ---
+        hero = soup.find('div', class_='hero') or soup.find('div', class_='header') or soup.find('div', class_='report-header')
         if hero:
             slide = prs.slides.add_slide(prs.slide_layouts[0])
             title_shape = slide.shapes.title
@@ -46,7 +44,7 @@ def html_to_pptx_with_charts(html_content):
             title_shape.text = h1.get_text(strip=True) if h1 else "数据分析报告"
             subtitle_shape.text = sub.get_text(strip=True) if sub else ""
 
-        # --- 2. 递归解析逻辑 (真·无限穿透版) ---
+        # --- 2. 递归解析逻辑 ---
         def process_element(el, text_frame, slide_title_text):
             if el.name in ['p', 'h4']:
                 text = el.get_text(strip=True)
@@ -87,27 +85,23 @@ def html_to_pptx_with_charts(html_content):
             elif el.name == 'div':
                 classes = el.get('class', [])
                 
-                # 屏蔽网页的顶栏和按钮，防止乱入正文
-                if 'hero' in classes or 'header' in classes or 'controls' in classes:
+                # 屏蔽网页控制台和封面，防止乱入正文
+                if 'hero' in classes or 'header' in classes or 'controls' in classes or 'global-controls' in classes or 'report-header' in classes:
                     return
 
-                # 🔥 升级1：抓取图表 (兼容图表自身带 class 或 父容器带 class)
+                # 图表抓拍
                 if 'chart-container' in classes or 'chart-wrapper' in classes:
-                    # 先看自己是不是图表（解决新版合并问题）
                     if el.get('id') and str(el.get('id')).startswith('chart'):
                         chart_id = el.get('id')
                     else:
-                        # 再往肚子里找找看（兼容老版套娃问题）
                         child_chart = el.find('div', id=lambda x: x and str(x).startswith('chart'))
                         chart_id = child_chart.get('id') if child_chart else None
                         
                     if chart_id:
-                        print(f"📸 锁定目标容器: [ {chart_id} ]，执行抓拍...")
                         element_handle = page.locator(f"#{chart_id}")
                         if element_handle.count() > 0:
                             element_handle.scroll_into_view_if_needed()
                             time.sleep(0.5) 
-                            
                             image_bytes = element_handle.screenshot()
                             image_stream = io.BytesIO(image_bytes)
                             
@@ -116,39 +110,59 @@ def html_to_pptx_with_charts(html_content):
                             chart_slide.shapes.add_picture(image_stream, Inches(1), Inches(1.5), width=Inches(8))
                     return 
                     
-                # 🔥 升级2：数据卡片单点突破
-                if 'metric-card' in classes:
+                # 🔥 核心升级2：兼容新旧版 KPI 数据卡片
+                if 'metric-card' in classes or 'kpi-card' in classes:
                     p = text_frame.add_paragraph()
-                    p.text = f"📊 {el.get_text(' : ', strip=True)}"
+                    num = el.find(class_=lambda x: x and 'num' in x)
+                    label = el.find(class_=lambda x: x and 'label' in x)
+                    if num and label:
+                        p.text = f"📊 {label.get_text(strip=True)} : {num.get_text(strip=True)}"
+                    else:
+                        p.text = f"📊 {el.get_text(' : ', strip=True)}"
                     p.font.bold = True
                     p.font.size = Pt(16)
                     return
+                
+                # 🔥 核心升级3：兼容新版副标题段落
+                if 'section-desc' in classes:
+                    p = text_frame.add_paragraph()
+                    p.text = "📝 " + el.get_text(strip=True)
+                    p.font.size = Pt(14)
+                    return
+                    
+                # 🔥 核心升级4：兼容新版的重点项 (优先级条目)
+                if 'priority-item' in classes:
+                    p = text_frame.add_paragraph()
+                    p.text = "🎯 " + el.get_text(" ", strip=True)
+                    p.font.size = Pt(14)
+                    return
                         
-                # 洞察结论
+                # 洞察结论 (仅保留旧版兼容，新版 analysis-box 会触发下方的穿透，自动解析出 h4 和 p)
                 if 'insight-box' in classes:
                     p = text_frame.add_paragraph()
                     p.text = "💡 洞察结论：\n" + el.get_text(" ", strip=True)
                     p.font.bold = True
                     return
                     
-                # 🔥 升级3：无差别向下钻透！
-                # 只要不是上面识别过的，管它是 dashboard-grid 还是 card，直接钻进去继续找！
+                # 无差别向下钻透
                 for child in el.children:
                     if child.name:
                         process_element(child, text_frame, slide_title_text)
 
         # --- 3. 遍历 Section 生成 ---
-        # 寻找内容的根节点，依次尝试：section -> container -> body
         sections = soup.find_all('div', class_='section')
         if not sections:
             container = soup.find('div', class_='container')
             sections = [container] if container else [soup.find('body') or soup]
 
         for section in sections:
-            # 标题现在同时兼容 h1 和 h2
             h_tag = section.find(['h2', 'h1'])
             current_h_text = h_tag.get_text(strip=True) if h_tag else "页面内容提要"
             
+            # 过滤掉单纯当做目录的 Section（比如包含 "报告目录" 的 h2）
+            if "报告目录" in current_h_text:
+                continue
+                
             current_slide = prs.slides.add_slide(prs.slide_layouts[1])
             current_slide.shapes.title.text = current_h_text
             text_frame = current_slide.placeholders[1].text_frame
@@ -167,7 +181,6 @@ def html_to_pptx_with_charts(html_content):
                     process_element(el, text_frame, current_h_text)
                     
         browser.close()
-        print("🎉 全部处理完毕，释放引擎资源。\n")
 
     output = io.BytesIO()
     prs.save(output)
