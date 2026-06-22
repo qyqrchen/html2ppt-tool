@@ -46,7 +46,6 @@ def html_to_pptx_with_charts(html_content):
 
         # --- 2. 递归解析逻辑 ---
         def process_element(el, text_frame, slide_title_text):
-            # 🔥 修复 1：认识嵌套在盒子里的标题（h3）
             if el.name in ['p', 'h3', 'h4']:
                 text = el.get_text(strip=True)
                 if text:
@@ -70,12 +69,10 @@ def html_to_pptx_with_charts(html_content):
                 if not rows: return
                 cols_count = max(len(row.find_all(['th', 'td'])) for row in rows)
                 
-                # 🔥 修复 2：将表格展宽至 9.6 英寸，留出更大空间
                 left, top, width, height = Inches(0.2), Inches(1.5), Inches(9.6), Inches(0.5)
                 shape = table_slide.shapes.add_table(len(rows), cols_count, left, top, width, height)
                 table = shape.table
                 
-                # 🔥 修复 2.1：智能分配列宽！给内容最多的最后一列留足空间，防止把表格拉爆
                 if cols_count == 9:
                     widths = [0.4, 0.8, 0.9, 1.4, 0.9, 0.9, 0.8, 1.0, 2.5]
                     for idx, w in enumerate(widths):
@@ -89,7 +86,6 @@ def html_to_pptx_with_charts(html_content):
                             cell_tf = table.cell(r_idx, c_idx).text_frame
                             cell_tf.text = cell.get_text(" ", strip=True)
                             for paragraph in cell_tf.paragraphs:
-                                # 缩小表格字号，确保能塞进一页 PPT 里
                                 paragraph.font.size = Pt(9)
                                 if r_idx == 0:
                                     paragraph.font.bold = True
@@ -135,14 +131,11 @@ def html_to_pptx_with_charts(html_content):
                     p.font.size = Pt(14)
                     return
                         
-                # 🔥 修复 3：解开分析框的封印！不再强行合并文字，只加个引导标题，让底下的 p 和 ul 正常换行解析
                 if 'insight-box' in classes or 'analysis-box' in classes:
                     p = text_frame.add_paragraph()
                     p.text = "📌 深度分析："
                     p.font.bold = True
                     p.font.size = Pt(16)
-                    # 注意：这里我们故意去掉了 return！
-                    # 这样代码就会像漏斗一样，继续往下走，把框里的段落和列表完美提取出来
                     
                 # 无差别向下钻透
                 for child in el.children:
@@ -159,9 +152,9 @@ def html_to_pptx_with_charts(html_content):
             h_tag = section.find(['h2', 'h1'])
             current_h_text = h_tag.get_text(strip=True) if h_tag else "页面内容提要"
             
-            # 过滤掉单纯当做目录的页面
-            if "报告目录" in current_h_text:
-                continue
+            # 🔥 撤销这里的目录屏蔽，让目录页重新加入 PPT！
+            # if "报告目录" in current_h_text:
+            #     continue
                 
             current_slide = prs.slides.add_slide(prs.slide_layouts[1])
             current_slide.shapes.title.text = current_h_text
@@ -187,7 +180,7 @@ def html_to_pptx_with_charts(html_content):
     output.seek(0)
     return output
 
-# --- 🚀 华丽的 Web 界面构建 ---
+# --- 下方的 Streamlit 界面代码保持不变 ---
 st.set_page_config(page_title="HTML to PPT 转换器", page_icon="🚀", layout="wide")
 
 with st.sidebar:
